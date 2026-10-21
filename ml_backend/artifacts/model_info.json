@@ -1,0 +1,9 @@
+{
+  "model_version": "tabular-baseline-v1",
+  "public_roc_auc": 0.65005,
+  "validation_roc_auc": 0.6466109979581134,
+  "training_rows": 247972,
+  "text_used": false,
+  "smoke_test": "PASS: first 3 TEST predictions match original submission",
+  "model_sha256": "0cda8484fdb90e24417bce4196ef4ffa62c4bf1606ef7a4dd2c80bf1e38c89e2"
+}
