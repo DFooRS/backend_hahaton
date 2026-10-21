@@ -1,0 +1,29 @@
+name: Build and deploy backend image
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      packages: write
+    uses: LROOP2022/action/.github/workflows/docker-build-push.yml@v1
+    with:
+      image: ghcr.io/lroop2022/api
+
+  deploy:
+    permissions:
+      contents: write
+    needs: build
+    uses: LROOP2022/action/.github/workflows/update-kustomize.yml@v1
+    with:
+      manifests_repo: LROOP2022/hack-manifests
+      manifests_path: team-backend/api
+      service_name: api
+      image_tag: sha-${{ github.sha }}
+    secrets:
+      K8S_REPO_TOKEN: ${{ secrets.K8S_REPO_TOKEN }}

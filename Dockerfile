@@ -6,6 +6,7 @@ COPY ml_backend/requirements.txt ./ml_backend/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY ml_backend ./ml_backend
-RUN mkdir -p /app/data
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+COPY scripts ./scripts
+COPY migrations ./migrations
+EXPOSE 8080
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

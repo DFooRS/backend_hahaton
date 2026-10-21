@@ -4,21 +4,25 @@ import io
 import logging
 import math
 import os
+import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
+import psycopg
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
 from ml_backend.predictor import Predictor
+from app.lookup import PostgresLookup
+from app.model_assets import load_artifacts
 
-ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = ROOT / "ml_backend" / "artifacts"
-LOOKUP = Path(os.getenv("LOOKUP_PATH", str(ROOT / "data" / "lookup.sqlite")))
 MAX_CSV_ROWS = 1000
 MAX_CSV_BYTES = 32 * 1024 * 1024
 logger = logging.getLogger(__name__)
+requests_total = Counter("backend_http_requests_total", "HTTP requests", ["method", "route", "status"])
+request_duration = Histogram("backend_http_request_seconds", "HTTP request duration", ["method", "route"])
 
 
 class IdRequest(BaseModel):
@@ -40,17 +44,34 @@ class RecordsRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    artifacts, temporary = load_artifacts()
     app.state.predictor = Predictor(
-        ARTIFACTS,
-        lookup_path=LOOKUP if LOOKUP.is_file() else None,
+        artifacts,
         thread_count=int(os.getenv("MODEL_THREADS", "2")),
     )
-    yield
+    dsn = os.getenv("DATABASE_URL")
+    app.state.lookup = PostgresLookup(dsn, app.state.predictor.features) if dsn else None
+    try:
+        yield
+    finally:
+        if temporary:
+            temporary.cleanup()
 
 
 app = FastAPI(title="Bankruptcy prediction API", version="1.0.0", lifespan=lifespan)
 origins = [s.strip() for s in os.getenv("CORS_ORIGINS", "https://web.team-frontend.hack.week-infra.ru").split(",") if s.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+
+
+@app.middleware("http")
+async def record_http_metrics(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = route.path if route else "unmatched"
+    requests_total.labels(request.method, path, str(response.status_code)).inc()
+    request_duration.labels(request.method, path).observe(time.monotonic() - start)
+    return response
 
 
 def public_result(row):
@@ -71,20 +92,40 @@ def predict_records(request: Request, records: list[dict]):
 
 @app.get("/health")
 def health(request: Request):
-    return {"model_ready": True, "lookup_ready": request.app.state.predictor.lookup_path is not None}
+    lookup = request.app.state.lookup
+    return {"model_ready": True, "lookup_ready": bool(lookup and lookup.ready())}
+
+
+@app.get("/actuator/health/liveness")
+def liveness():
+    return {"status": "UP"}
+
+
+@app.get("/actuator/health/readiness")
+def readiness(request: Request):
+    return {"status": "UP" if request.app.state.predictor else "DOWN"}
+
+
+@app.get("/actuator/prometheus")
+def prometheus_metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/api/v1/predict/by-id")
 def predict_by_id(payload: IdRequest, request: Request):
-    predictor = request.app.state.predictor
-    if predictor.lookup_path is None:
+    lookup = request.app.state.lookup
+    if lookup is None or not lookup.ready():
         raise HTTPException(503, "Index lookup is not ready")
     try:
-        return public_result(predictor.predict_by_index(payload.index))
-    except KeyError as exc:
-        raise HTTPException(404, "Unknown index") from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        vector = lookup.get(payload.index)
+        if vector is None:
+            raise HTTPException(404, "Unknown index")
+        return public_result(request.app.state.predictor.predict_vector(vector, payload.index))
+    except HTTPException:
+        raise
+    except psycopg.Error as exc:
+        logger.exception("Lookup database unavailable")
+        raise HTTPException(503, "Index lookup is unavailable") from exc
     except Exception as exc:
         logger.exception("Prediction by index failed")
         raise HTTPException(500, "Prediction failed") from exc
