@@ -1,6 +1,7 @@
 """Import TRAIN and TEST feature vectors into PostgreSQL in one transaction."""
 import json
 import os
+import ssl
 import tempfile
 import urllib.request
 from contextlib import contextmanager
@@ -10,12 +11,14 @@ import numpy as np
 import pandas as pd
 import psycopg
 import pyzipper
+import certifi
 
 from app.lookup import features_hash
 from app.model_assets import load_artifacts
 
 CHUNK_SIZE = 1000
 MAX_ARCHIVE_BYTES = 5 * 1024 * 1024 * 1024
+TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 @contextmanager
@@ -38,7 +41,7 @@ def csv_sources():
         with tempfile.TemporaryDirectory(prefix="bankruptcy-data-") as directory:
             archive_path = Path(directory) / "data.zip"
             total = 0
-            with urllib.request.urlopen(archive_url, timeout=60) as response, archive_path.open("wb") as output:
+            with urllib.request.urlopen(archive_url, timeout=60, context=TLS_CONTEXT) as response, archive_path.open("wb") as output:
                 while chunk := response.read(1024 * 1024):
                     total += len(chunk)
                     if total > MAX_ARCHIVE_BYTES:
@@ -55,7 +58,7 @@ def csv_sources():
     elif train_url and test_url:
         if not train_url.startswith("https://") or not test_url.startswith("https://"):
             raise ValueError("CSV URLs must use HTTPS")
-        with urllib.request.urlopen(train_url, timeout=60) as train, urllib.request.urlopen(test_url, timeout=60) as test:
+        with urllib.request.urlopen(train_url, timeout=60, context=TLS_CONTEXT) as train, urllib.request.urlopen(test_url, timeout=60, context=TLS_CONTEXT) as test:
             yield (("TRAIN.csv", train), ("TEST.csv", test))
     else:
         raise ValueError("Set DATA_ZIP_URL or both TRAIN_CSV_URL and TEST_CSV_URL")

@@ -3,10 +3,13 @@ import hashlib
 import io
 import json
 import os
+import ssl
 import tempfile
 import urllib.request
 from pathlib import Path
 from zipfile import ZipFile
+
+import certifi
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_ARTIFACTS = ROOT / "ml_backend" / "artifacts"
@@ -27,7 +30,8 @@ def load_artifacts():
         return LOCAL_ARTIFACTS, None
     if not url.startswith("https://"):
         raise ValueError("MODEL_BUNDLE_URL must use HTTPS")
-    with urllib.request.urlopen(url, timeout=60) as response:
+    context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(url, timeout=60, context=context) as response:
         data = response.read(MAX_BUNDLE_BYTES + 1)
     if len(data) > MAX_BUNDLE_BYTES:
         raise ValueError("Model bundle exceeds 100 MiB")
