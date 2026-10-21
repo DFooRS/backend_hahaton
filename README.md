@@ -13,12 +13,19 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DBNAME'
 .venv/bin/python -m scripts.migrate
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-`DATABASE_URL` храните в окружении или Kubernetes Secret, не в Git. Документация API: `http://localhost:8000/docs`. `GET /health` сообщает `model_ready` и `lookup_ready`. Пока база не импортирована, запрос по ID отвечает `503`, а прогноз по JSON/CSV работает.
+`DATABASE_URL` храните в окружении или Kubernetes Secret, не в Git. Документация API: `http://localhost:8080/docs`. `GET /health` сообщает `model_ready` и `lookup_ready`. Пока база не импортирована, запрос по ID отвечает `503`, а прогноз по JSON/CSV работает. Контейнер слушает порт `8080` и отвечает на существующие кластерные пробы `/actuator/health/readiness`, `/actuator/health/liveness` и метрики `/actuator/prometheus`.
 
 Если задан `MODEL_BUNDLE_URL`, API скачивает публичный HTTPS ZIP при запуске, извлекает `model.cbm`, `features.json`, `model_info.json` и проверяет SHA-256 модели. Подходит исходный `ml_backend_ready_v1.zip`. Без переменной используются артефакты из репозитория. При обновлении модели меняйте архив и импортируйте lookup заново, если изменились признаки.
+
+Для бакета `backend` в MinIO загрузите через консоль `https://minio.hack.week-infra.ru` два исходных файла без переименования:
+
+- `ml_backend_ready_v1.zip` → `https://s3.hack.week-infra.ru/backend/ml_backend_ready_v1.zip`
+- `Hackathon-task.zip` → `https://s3.hack.week-infra.ru/backend/Hackathon-task.zip`
+
+После загрузки проверьте, что оба URL открываются без авторизации. Первый укажите как `MODEL_BUNDLE_URL`, второй как `DATA_ZIP_URL`. ZIP с данными зашифрован, поэтому пароль передаётся импортирующей Job через Kubernetes Secret. Не публикуйте его в Git или ConfigMap.
 
 ## PostgreSQL: миграция и импорт
 
@@ -31,7 +38,7 @@ export DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DBNAME'
 Команда безопасна для повторного запуска и фиксирует применённые версии в `schema_migrations`. После миграции импортируйте данные одним из способов:
 
 ```bash
-export DATA_ZIP_URL='https://PUBLIC-BUCKET/path/Hackathon-task.zip'
+export DATA_ZIP_URL='https://s3.hack.week-infra.ru/backend/Hackathon-task.zip'
 export DATA_ZIP_PASSWORD='***'
 .venv/bin/python -m scripts.import_lookup
 ```
@@ -40,9 +47,9 @@ export DATA_ZIP_PASSWORD='***'
 
 ### Kubernetes Jobs
 
-Оба манифеста используют один и тот же образ из [Dockerfile](Dockerfile). В `k8s/migrate-job.yaml` и `k8s/import-lookup-job.yaml` замените `REPLACE_WITH_BACKEND_IMAGE` на опубликованный образ. Создайте Secret `bankruptcy-backend-secrets` с ключом `database-url`; если ZIP зашифрован, добавьте `data-zip-password`. Создайте ConfigMap `bankruptcy-backend-config` с `DATA_ZIP_URL` **или** с обоими `TRAIN_CSV_URL` и `TEST_CSV_URL`. `MODEL_BUNDLE_URL` тоже можно положить в ConfigMap.
+В `k8s/` лежат шаблоны двух отдельных Job для команды платформы; существующий репозиторий `hack-manifests` эти файлы не меняют. В `k8s/migrate-job.yaml` и `k8s/import-lookup-job.yaml` нужно подставить опубликованный образ. Шаблоны ожидают Secret `bankruptcy-backend-secrets` с ключом `database-url` и `data-zip-password`, а также ConfigMap `bankruptcy-backend-config` с `DATA_ZIP_URL`. Доступ команды `team-backend` разрешает смотреть Job, но не создавать их, поэтому применяет их администратор платформы.
 
-Сначала примените `k8s/migrate-job.yaml` и дождитесь завершения, затем `k8s/import-lookup-job.yaml`. Пример:
+Применяйте миграцию, затем импорт до запуска API: импортирующая Job запрашивает весь лимит памяти namespace. Пример для администратора платформы после подготовки Secret и ConfigMap:
 
 ```bash
 kubectl apply -f k8s/migrate-job.yaml
@@ -51,7 +58,11 @@ kubectl apply -f k8s/import-lookup-job.yaml
 kubectl wait --for=condition=complete job/bankruptcy-lookup-import --timeout=3600s
 ```
 
-Передайте контейнеру API тот же `DATABASE_URL` и, если модель хранится в S3, `MODEL_BUNDLE_URL`. Бакет должен отдавать объекты по публичным HTTPS URL. Ни AWS-ключи, ни SDK для чтения не нужны.
+Существующий Deployment получает переменные из Secret `api-secrets`. В нём для полноценного API нужны `DATABASE_URL` и `MODEL_BUNDLE_URL`. Сам Deployment и другие файлы `hack-manifests` здесь не изменяются. Бакет должен отдавать объекты по публичным HTTPS URL. Ни AWS-ключи, ни SDK для чтения не нужны.
+
+## Сборка образа и онбординг
+
+`.github/workflows/backend-image.yml` использует присланные reusable actions. После мержа в `LROOP2022/backend:main` workflow собирает `ghcr.io/lroop2022/api:sha-<commit>` и обновляет тег в `LROOP2022/hack-manifests/team-backend/api/kustomization.yaml`. В репозитории backend должен существовать GitHub Secret `K8S_REPO_TOKEN`, а пакет GHCR должен быть доступен кластеру для скачивания. Этот workflow не запускается от push в ветку форка `backend-api`.
 
 ## Контракт для фронтенда
 

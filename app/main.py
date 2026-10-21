@@ -4,11 +4,14 @@ import io
 import logging
 import math
 import os
+import time
 from contextlib import asynccontextmanager
 
 import psycopg
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
 from ml_backend.predictor import Predictor
@@ -18,6 +21,8 @@ from app.model_assets import load_artifacts
 MAX_CSV_ROWS = 1000
 MAX_CSV_BYTES = 32 * 1024 * 1024
 logger = logging.getLogger(__name__)
+requests_total = Counter("backend_http_requests_total", "HTTP requests", ["method", "route", "status"])
+request_duration = Histogram("backend_http_request_seconds", "HTTP request duration", ["method", "route"])
 
 
 class IdRequest(BaseModel):
@@ -58,6 +63,17 @@ origins = [s.strip() for s in os.getenv("CORS_ORIGINS", "https://web.team-fronte
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
+@app.middleware("http")
+async def record_http_metrics(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = route.path if route else "unmatched"
+    requests_total.labels(request.method, path, str(response.status_code)).inc()
+    request_duration.labels(request.method, path).observe(time.monotonic() - start)
+    return response
+
+
 def public_result(row):
     return {"index": row["index"], "probability": row["target"]}
 
@@ -78,6 +94,21 @@ def predict_records(request: Request, records: list[dict]):
 def health(request: Request):
     lookup = request.app.state.lookup
     return {"model_ready": True, "lookup_ready": bool(lookup and lookup.ready())}
+
+
+@app.get("/actuator/health/liveness")
+def liveness():
+    return {"status": "UP"}
+
+
+@app.get("/actuator/health/readiness")
+def readiness(request: Request):
+    return {"status": "UP" if request.app.state.predictor else "DOWN"}
+
+
+@app.get("/actuator/prometheus")
+def prometheus_metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/api/v1/predict/by-id")

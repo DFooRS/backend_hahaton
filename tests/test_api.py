@@ -71,6 +71,15 @@ class ApiTest(unittest.TestCase):
     def test_index_unavailable_without_database(self):
         self.assertEqual(self.client.post("/api/v1/predict/by-id", json={"index": "194357"}).status_code, 503)
 
+    def test_platform_health_and_metrics_endpoints(self):
+        for path in ("/actuator/health/liveness", "/actuator/health/readiness"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"status": "UP"})
+        metrics = self.client.get("/actuator/prometheus")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("backend_http_requests_total", metrics.text)
+
 
 if __name__ == "__main__":
     unittest.main()
