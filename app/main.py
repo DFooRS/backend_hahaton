@@ -5,17 +5,16 @@ import logging
 import math
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 
+import psycopg
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
 from ml_backend.predictor import Predictor
+from app.lookup import PostgresLookup
+from app.model_assets import load_artifacts
 
-ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = ROOT / "ml_backend" / "artifacts"
-LOOKUP = Path(os.getenv("LOOKUP_PATH", str(ROOT / "data" / "lookup.sqlite")))
 MAX_CSV_ROWS = 1000
 MAX_CSV_BYTES = 32 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -40,12 +39,18 @@ class RecordsRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    artifacts, temporary = load_artifacts()
     app.state.predictor = Predictor(
-        ARTIFACTS,
-        lookup_path=LOOKUP if LOOKUP.is_file() else None,
+        artifacts,
         thread_count=int(os.getenv("MODEL_THREADS", "2")),
     )
-    yield
+    dsn = os.getenv("DATABASE_URL")
+    app.state.lookup = PostgresLookup(dsn, app.state.predictor.features) if dsn else None
+    try:
+        yield
+    finally:
+        if temporary:
+            temporary.cleanup()
 
 
 app = FastAPI(title="Bankruptcy prediction API", version="1.0.0", lifespan=lifespan)
@@ -71,20 +76,25 @@ def predict_records(request: Request, records: list[dict]):
 
 @app.get("/health")
 def health(request: Request):
-    return {"model_ready": True, "lookup_ready": request.app.state.predictor.lookup_path is not None}
+    lookup = request.app.state.lookup
+    return {"model_ready": True, "lookup_ready": bool(lookup and lookup.ready())}
 
 
 @app.post("/api/v1/predict/by-id")
 def predict_by_id(payload: IdRequest, request: Request):
-    predictor = request.app.state.predictor
-    if predictor.lookup_path is None:
+    lookup = request.app.state.lookup
+    if lookup is None or not lookup.ready():
         raise HTTPException(503, "Index lookup is not ready")
     try:
-        return public_result(predictor.predict_by_index(payload.index))
-    except KeyError as exc:
-        raise HTTPException(404, "Unknown index") from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        vector = lookup.get(payload.index)
+        if vector is None:
+            raise HTTPException(404, "Unknown index")
+        return public_result(request.app.state.predictor.predict_vector(vector, payload.index))
+    except HTTPException:
+        raise
+    except psycopg.Error as exc:
+        logger.exception("Lookup database unavailable")
+        raise HTTPException(503, "Index lookup is unavailable") from exc
     except Exception as exc:
         logger.exception("Prediction by index failed")
         raise HTTPException(500, "Prediction failed") from exc

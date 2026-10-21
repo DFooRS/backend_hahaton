@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -47,12 +48,28 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_index_lookup(self):
-        if not (ROOT / "data/lookup.sqlite").exists():
-            self.skipTest("Local lookup not built")
-        response = self.client.post("/api/v1/predict/by-id", json={"index": "194357"})
-        self.assertEqual(response.status_code, 200)
-        self.assertAlmostEqual(response.json()["probability"], self.expected[0]["target"], places=12)
-        self.assertEqual(self.client.post("/api/v1/predict/by-id", json={"index": "does-not-exist"}).status_code, 404)
+        features = self.client.app.state.predictor.features
+        vector = np.asarray([self.records[0][name] for name in features], dtype="<f4").tobytes()
+
+        class FakeLookup:
+            def ready(self):
+                return True
+
+            def get(self, index):
+                return vector if str(index) == "194357" else None
+
+        original = self.client.app.state.lookup
+        self.client.app.state.lookup = FakeLookup()
+        try:
+            response = self.client.post("/api/v1/predict/by-id", json={"index": "194357"})
+            self.assertEqual(response.status_code, 200)
+            self.assertAlmostEqual(response.json()["probability"], self.expected[0]["target"], places=12)
+            self.assertEqual(self.client.post("/api/v1/predict/by-id", json={"index": "does-not-exist"}).status_code, 404)
+        finally:
+            self.client.app.state.lookup = original
+
+    def test_index_unavailable_without_database(self):
+        self.assertEqual(self.client.post("/api/v1/predict/by-id", json={"index": "194357"}).status_code, 503)
 
 
 if __name__ == "__main__":
