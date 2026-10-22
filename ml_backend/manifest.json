@@ -1,0 +1,21 @@
+{
+  "example_backend.py": "c888937f1a5a132ce16be717c1821c2b90f433e1580e121dbf5827291f2b220c",
+  "model_card.json": "38f00fcb0f2c5f3c24490f0e6af061ef79c7e150a7b0b5e508355b55cdd3e050",
+  "predictor.py": "f120c95c162c87fcc31ba5173c1fef2f278088943dacc569cef94001b1555393",
+  "README.md": "86b7e3d45a98b55ee85a9e544cef6fdb3d09673241b663035460a765b877868e",
+  "requirements.txt": "5aff392ba1632d7b9ea556a5a45067aa8460ab4b6b6e1804455745beab99105e",
+  "verification.json": "1cdc7d36bee39d3645dc27045db296072a10ae60379977fa2d8c2be9c24cc02d",
+  "verify_package.py": "1eb015042b6658f17cea14d7f4034166989762a4d20e2b029589ee0bcf06b0f9",
+  "artifacts/features.json": "5db54a4f458e72a380a7265b15fb36b86dea8938b9fd6af07d188719ae3ac673",
+  "artifacts/final_submission.csv": "54de1d036813a34eacced9d5e31fba54992bc378411bbc21c79b5301acf481ae",
+  "artifacts/joint_lightgbm.txt": "6a9c0596c2dbcb99acf0bc71adffdc37405781f281dac59f4fd945dcc38441f8",
+  "artifacts/linear.joblib": "be5ea541a305cdc868547e747f40b2561c92867c96912e3059283a149a5dbf6f",
+  "artifacts/linear_preprocessing.joblib": "adc83b7395caaebd2a06a73cf6c7aca62ed4516d9be9af85e634e6bc3917da53",
+  "artifacts/profiles.sqlite": "447928f2dac0d4ad43c007ecfc3f68e9cb167ef410a5d4aa787d15e2f1b0f414",
+  "artifacts/raw_lightgbm.txt": "bfd9c5fbfce89a56aaf74dde531e4859d9d0e68c75db46baae895ebe976c3fb3",
+  "artifacts/scores.sqlite": "fbe78d5c0655fd1c0d48fdff86b369282ad87168aad2cecedb99f9976d6aa565",
+  "artifacts/smoke_cases.json": "540cfff41da99d61652f79b4b123367877e289e33c49718948d85f683849539f",
+  "artifacts/text_C1.joblib": "df70d8689301b3cc58dfa09d4262f6f7d8718d053bb51eece40184332d003497",
+  "artifacts/text_C4.joblib": "88f2d6f86835fce63094323f45ef199dc8c361f63947225bf1b988ec39268dd0",
+  "artifacts/text_svd.joblib": "aacc13616118512ed2750d127ea769fb637769fccfd766451260c6ba5e5aa32d"
+}

@@ -11,3 +11,5 @@ __pycache__/
 *.zip
 *.csv
 *.tsv
+/ml_backend/artifacts/*
+!/ml_backend/artifacts/.gitkeep

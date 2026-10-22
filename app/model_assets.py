@@ -1,52 +1,38 @@
-"""Load model artifacts from a public HTTPS ZIP or the repository."""
+"""Locate and sanity-check the ML artifacts directory (stored on the server, never in Git/image)."""
 import hashlib
-import io
 import json
 import os
-import ssl
-import tempfile
-import urllib.request
 from pathlib import Path
-from zipfile import ZipFile
-
-import certifi
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCAL_ARTIFACTS = ROOT / "ml_backend" / "artifacts"
-MAX_BUNDLE_BYTES = 100 * 1024 * 1024
+DEFAULT_ARTIFACTS = ROOT / "ml_backend" / "artifacts"
+REQUIRED = (
+    "features.json", "raw_lightgbm.txt", "joint_lightgbm.txt", "text_C1.joblib", "text_C4.joblib",
+    "text_svd.joblib", "linear.joblib", "linear_preprocessing.joblib", "scores.sqlite", "profiles.sqlite",
+)
+# Files small enough to hash on every start; the full check is `python verify_package.py`.
+HASHED_AT_START = REQUIRED[:-2]
+
+
+def artifacts_dir() -> Path:
+    return Path(os.getenv("ML_ARTIFACTS_DIR") or DEFAULT_ARTIFACTS).resolve()
 
 
 def verify(artifacts: Path) -> None:
-    info = json.loads((artifacts / "model_info.json").read_text(encoding="utf-8"))
-    actual = hashlib.sha256((artifacts / "model.cbm").read_bytes()).hexdigest()
-    if actual != info["model_sha256"]:
-        raise ValueError("Model checksum does not match model_info.json")
+    missing = [name for name in REQUIRED if not (artifacts / name).is_file()]
+    if missing:
+        raise FileNotFoundError(f"ML artifacts missing in {artifacts}: {', '.join(missing)}")
+    manifest_path = ROOT / "ml_backend" / "manifest.json"
+    if os.getenv("VERIFY_ARTIFACTS_ON_START", "1") == "0" or not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for name in HASHED_AT_START:
+        digest = hashlib.sha256((artifacts / name).read_bytes()).hexdigest()
+        if digest != manifest.get(f"artifacts/{name}"):
+            raise ValueError(f"Checksum mismatch: {name}")
 
 
-def load_artifacts():
-    url = os.getenv("MODEL_BUNDLE_URL")
-    if not url:
-        verify(LOCAL_ARTIFACTS)
-        return LOCAL_ARTIFACTS, None
-    if not url.startswith("https://"):
-        raise ValueError("MODEL_BUNDLE_URL must use HTTPS")
-    context = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(url, timeout=60, context=context) as response:
-        data = response.read(MAX_BUNDLE_BYTES + 1)
-    if len(data) > MAX_BUNDLE_BYTES:
-        raise ValueError("Model bundle exceeds 100 MiB")
-    temporary = tempfile.TemporaryDirectory(prefix="bankruptcy-model-")
-    artifacts = Path(temporary.name)
-    try:
-        with ZipFile(io.BytesIO(data)) as archive:
-            names = archive.namelist()
-            for name in ("model.cbm", "features.json", "model_info.json"):
-                matches = [entry for entry in names if entry == name or entry.endswith("/artifacts/" + name)]
-                if len(matches) != 1:
-                    raise ValueError(f"Model bundle must contain exactly one {name}")
-                (artifacts / name).write_bytes(archive.read(matches[0]))
-        verify(artifacts)
-        return artifacts, temporary
-    except Exception:
-        temporary.cleanup()
-        raise
+def load_artifacts() -> Path:
+    artifacts = artifacts_dir()
+    verify(artifacts)
+    return artifacts

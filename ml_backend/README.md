@@ -1,9 +1,90 @@
-# ML module: tabular-baseline-v1
+# Финальный ML-модуль: bankruptcy-final-one-match-v1
 
-This directory contains the model supplied by the ML teammate. The public ROC-AUC reported for this version is 0.65005. It uses the 1367 tabular features; `word_count` is reserved and does not affect current predictions. Percentages have not been separately calibrated.
+Public ROC-AUC: **0.70861**, первое место на показанном публичном рейтинге. Private пока неизвестен.
 
-`Predictor(artifacts_dir)` loads the CatBoost model once. `predict(records)` accepts a nonempty list of complete flat records with all `feature_0` through `feature_1366`, each numeric or null. Optional fields: `index` and `word_count`. Unknown fields, including `target`, are rejected. It returns `{index, target}` where `target` is a probability from 0 to 1.
+## Олегу: сборка
 
-`predict_vector(payload, index)` accepts a little-endian float32 vector read from PostgreSQL and returns one result. The HTTP adapter converts `target` to the public field `probability`.
+Этот комплект — сборщик и исходники. Обученные артефакты берутся из твоего `D:\hackaton\runs`; в исходном ZIP их нет.
 
-The example request and response files are reference cases for smoke tests. `model_info.json` includes the SHA-256 hash checked during startup. For a new model version, replace code and artifacts together, then rebuild the PostgreSQL lookup if the feature schema changes.
+1. Распакуй комплект в `D:\hackaton\final_backend_kit`.
+2. В PowerShell выполни:
+
+```powershell
+& "C:\Users\Oleg\AppData\Local\Programs\Python\Python312\python.exe" "D:\hackaton\final_backend_kit\build_final_backend.py" --project-root "D:\hackaton" --threads 2
+```
+
+Сборка не обучает модели. Читает TRAIN, текстовый файл и TEST, создаёт справочник профилей и сравнивает все 106274 предсказания с финальным submission. Нужны свободные гигабайты диска: справочник хранит точные числовые профили TRAIN. Сборка и упаковка могут занять несколько минут или больше в зависимости от диска/CPU.
+
+**Передавай бекендеру только ZIP из строки `READY FOR BACKEND`.** Если проверка остановилась с ошибкой, пакет не готов: пришли ошибку. Исходные модели и отправки не изменяются.
+
+## Бекендеру: установка
+
+Python 3.12, CPU. CUDA, PyTorch, TabM и CatBoost не нужны. `requirements.txt` с точными версиями создаётся при сборке из рабочего окружения обучения.
+
+```bash
+python -m venv .venv
+# активировать окружение способом вашей ОС
+python -m pip install -r requirements.txt
+python verify_package.py
+```
+
+На Linux LightGBM может потребовать системную библиотеку OpenMP (`libgomp1` в Debian/Ubuntu). Запускайте проверку в конечном контейнере. Только после PASS подключайте к сервису. joblib-файлы загружать исключительно из этого доверенного пакета.
+
+## Режим 1: известный пользователь из TEST
+
+Это получение сохранённого финального прогноза, а не новое обучение или расчёт. Для демонстрации достаточно `predictor.py` и `artifacts/scores.sqlite`; этот режим использует только стандартную библиотеку Python.
+
+```python
+from predictor import ScoreLookup
+ml = ScoreLookup('artifacts')
+result = ml.predict_by_index('194357')  # используйте фактический ID из TEST
+# {"index": "194357", "target": <probability>}
+```
+
+Неизвестный ID вызывает KeyError: возвращайте HTTP 404. База содержит только 106274 TEST ID. Не возвращайте фиктивную вероятность для неизвестного ID.
+
+## Режим 2: новые признаки и текст
+
+```python
+from predictor import Predictor
+ml = Predictor('artifacts', thread_count=2)  # один раз при старте процесса
+result = ml.predict(records)
+```
+
+`records` — список от 1 до 1000 объектов, каждый содержит:
+- `feature_0` … `feature_1366`: все 1367 конечных чисел;
+- `word_count`: строка вида `"спорт 3 музыка 2"`, либо пустая строка/None/отсутствует;
+- `index`: необязательный идентификатор string/int, только переносится в ответ, не является признаком.
+
+Ответ — список `{"index": ..., "target": ...}` в исходном порядке. Вероятность от 0 до 1. Предобработка текста: пары слово/неотрицательная целая частота, нижний регистр, нулевые частоты игнорируются. Строки с ошибками, отсутствующие табличные поля, NaN/Infinity, bool в числах отклоняются (ValueError -> HTTP 422). Не округляйте входные признаки: правило точного совпадения использует значения float64.
+
+Если фронт передаёт только ID, используйте режим 1. Если переданы новые/изменённые признаки, используйте режим 2; нельзя подменять его сохранённым прогнозом по ID. Пустой текст допустим, но предсказание тогда закономерно может отличаться от прогноза с текстом.
+
+## Состав финального решения
+
+Базовый прогноз:
+
+`0.225 * raw_LightGBM + 0.225 * joint_LightGBM + 0.225 * text_LR_C1 + 0.225 * text_LR_C4 + 0.10 * tabular_LR`
+
+Joint: таблица + первые 32 компоненты SVD, обученного на 64. Текстовые модели: hash counts -> TF-IDF -> LR. Табличная LR: сохранённые clipping, медианы и StandardScaler.
+
+После ансамбля ищем точное совпадение всех 1367 числовых признаков в TRAIN:
+- ровно одна строка: `(base_probability + target_этой_строки) / 2`;
+- нет совпадений или несколько: `base_probability` без поправки.
+
+Поиск проверяет и отпечаток, и полные байты профиля. Строки TRAIN целиком по ID в API не выдаются. `profiles.sqlite` содержит числовые профили и агрегированные метки; хранить на стороне сервера, не отдавать клиенту и не публиковать как статический ресурс.
+
+## Эксплуатация и ограничения
+
+- Начать с одного worker и двух CPU-потоков. Каждый отдельный worker загружает свои модели и увеличивает RAM. SQLite читается с диска; полная таблица TRAIN не загружается в оперативную память при инференсе.
+- В одном Predictor вызовы сериализованы блокировкой. Для тяжёлых пакетов используйте очередь; нагрузочное тестирование на вашем сервере ещё требуется.
+- Путь `artifacts` постоянный, модели загружать один раз. Не запускать сборщик внутри HTTP-запроса.
+- Пакет не включает API-сервер, UI и обучение. Их реализует команда; пример вызовов — `example_backend.py`.
+- Выход — оценка модели, не доказательство банкротства. ROC-AUC не гарантирует калибровку вероятностей; пороги бизнес-решений не подбирались.
+- Правило совпадений использует размеченный TRAIN. Для новых распределений и новых источников данных нужна отдельная оценка.
+
+## Проверка поставки
+
+`verification.json` фиксирует полное сравнение с финальной отправкой, максимальную погрешность и проверку публичного Python API на примерах. `verify_package.py` проверяет контрольные суммы, lookup и сохранённые примеры после развёртывания. Ожидаемая погрешность живого инференса относительно CSV: `atol=2e-7`, `rtol=1e-6`; lookup хранит значения CSV без изменения.
+
+`manifest.json` — SHA-256 файлов. `model_card.json` — веса, версии, происхождение артефактов. Все обученные компоненты находятся в `artifacts`. Не смешивайте файлы из старого CatBoost baseline и этого пакета.
